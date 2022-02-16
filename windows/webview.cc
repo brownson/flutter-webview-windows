@@ -2,12 +2,14 @@
 
 #include <atlstr.h>
 #include <fmt/core.h>
-#include <winrt/Windows.UI.Core.h>
+#include <wrl.h>
 
 #include <iostream>
 
 #include "util/composition.desktop.interop.h"
 #include "webview_host.h"
+
+using namespace Microsoft::WRL;
 
 namespace {
 
@@ -20,6 +22,14 @@ inline void ConvertColor(COREWEBVIEW2_COLOR& webview_color, int32_t color) {
   webview_color.G = (color >> 8) & 0xFF;
   webview_color.R = (color >> 16) & 0xFF;
   webview_color.A = (color >> 24) & 0xFF;
+}
+
+std::wstring get_utf16(const std::string& str, int codepage) {
+  if (str.empty()) return std::wstring();
+  int sz = MultiByteToWideChar(codepage, 0, &str[0], (int)str.size(), 0, 0);
+  std::wstring res(sz, 0);
+  MultiByteToWideChar(codepage, 0, &str[0], (int)str.size(), &res[0], sz);
+  return res;
 }
 
 inline WebviewPermissionKind CW2PermissionKindToPermissionKind(
@@ -66,15 +76,19 @@ Webview::Webview(
       hwnd_(hwnd),
       owns_window_(owns_window) {
   webview_controller_ =
-      composition_controller_.query<ICoreWebView2Controller3>();
-  webview_controller_->get_CoreWebView2(webview_.put());
+      composition_controller_.try_query<ICoreWebView2Controller3>();
+
+  if (!webview_controller_ ||
+      FAILED(webview_controller_->get_CoreWebView2(webview_.put()))) {
+    return;
+  }
 
   webview_controller_->put_BoundsMode(COREWEBVIEW2_BOUNDS_MODE_USE_RAW_PIXELS);
   webview_controller_->put_ShouldDetectMonitorScaleChanges(FALSE);
   webview_controller_->put_RasterizationScale(1.0);
 
   wil::com_ptr<ICoreWebView2Settings> settings;
-  if (webview_->get_Settings(settings.put()) == S_OK) {
+  if (SUCCEEDED(webview_->get_Settings(settings.put()))) {
     settings2_ = settings.try_query<ICoreWebView2Settings2>();
 
     settings->put_IsStatusBarEnabled(FALSE);
@@ -84,29 +98,7 @@ Webview::Webview(
   EnableSecurityUpdates();
   RegisterEventHandlers();
 
-  auto compositor = host->compositor();
-  auto root = compositor.CreateContainerVisual();
-
-  // initial size. doesn't matter as we resize the surface anyway.
-  root.Size({1280, 720});
-  root.IsVisible(true);
-  surface_ = root.as<winrt::Windows::UI::Composition::Visual>();
-
-  // Create on-screen window for debugging purposes
-  if (!offscreen_only) {
-    window_target_ = util::CreateDesktopWindowTarget(compositor, hwnd);
-    window_target_.Root(root);
-  }
-
-  auto webview_visual = compositor.CreateSpriteVisual();
-  webview_visual.RelativeSizeAdjustment({1.0f, 1.0f});
-
-  root.Children().InsertAtTop(webview_visual);
-
-  composition_controller_->put_RootVisualTarget(
-      webview_visual.as<IUnknown>().get());
-
-  webview_controller_->put_IsVisible(true);
+  is_valid_ = CreateSurface(host->compositor(), hwnd, offscreen_only);
 }
 
 Webview::~Webview() {
@@ -115,31 +107,84 @@ Webview::~Webview() {
   }
 }
 
-void Webview::EnableSecurityUpdates() {
-  if (webview_->CallDevToolsProtocolMethod(L"Security.enable", L"{}",nullptr) == S_OK) {
-    if (webview_->GetDevToolsProtocolEventReceiver(L"Security.securityStateChanged",
-      &devtools_protocol_event_receiver_) == S_OK) {
-      devtools_protocol_event_receiver_->add_DevToolsProtocolEventReceived(
-          Callback<ICoreWebView2DevToolsProtocolEventReceivedEventHandler>(
-              [this](ICoreWebView2* sender,
-                  ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args) -> HRESULT {
-                if (devtools_protocol_event_callback_) {
-                  wil::unique_cotaskmem_string jsonArgs;
-                  if (args->get_ParameterObjectAsJson(&jsonArgs) == S_OK) {
-                    std::string json = CW2A(jsonArgs.get());
-                    devtools_protocol_event_callback_(json.c_str());
-                  }
-                }
+bool Webview::CreateSurface(
+    winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor,
+    HWND hwnd, bool offscreen_only) {
+  winrt::com_ptr<ABI::Windows::UI::Composition::IContainerVisual> root;
+  if (FAILED(compositor->CreateContainerVisual(root.put()))) {
+    return false;
+  }
 
-                return S_OK;
-              })
-              .Get(),
-          &event_registrations_.devtools_protocol_event_token_);
+  surface_ = root.try_as<ABI::Windows::UI::Composition::IVisual>();
+  assert(surface_);
+
+  // initial size. doesn't matter as we resize the surface anyway.
+  surface_->put_Size({1280, 720});
+  surface_->put_IsVisible(true);
+
+  // Create on-screen window for debugging purposes
+  if (!offscreen_only) {
+    window_target_ = util::TryCreateDesktopWindowTarget(compositor, hwnd);
+    auto composition_target =
+        window_target_
+            .try_as<ABI::Windows::UI::Composition::ICompositionTarget>();
+    if (composition_target) {
+      composition_target->put_Root(surface_.get());
     }
+  }
+
+  winrt::com_ptr<ABI::Windows::UI::Composition::IVisual> webview_visual;
+  compositor->CreateContainerVisual(
+      reinterpret_cast<ABI::Windows::UI::Composition::IContainerVisual**>(
+          webview_visual.put()));
+
+  auto webview_visual2 =
+      webview_visual.try_as<ABI::Windows::UI::Composition::IVisual2>();
+  if (webview_visual2) {
+    webview_visual2->put_RelativeSizeAdjustment({1.0f, 1.0f});
+  }
+
+  winrt::com_ptr<ABI::Windows::UI::Composition::IVisualCollection> children;
+  root->get_Children(children.put());
+  children->InsertAtTop(webview_visual.get());
+  composition_controller_->put_RootVisualTarget(webview_visual2.get());
+
+  webview_controller_->put_IsVisible(true);
+
+  return true;
+}
+
+void Webview::EnableSecurityUpdates() {
+  if (SUCCEEDED(webview_->CallDevToolsProtocolMethod(L"Security.enable", L"{}",
+                                                     nullptr)) &&
+      SUCCEEDED(webview_->GetDevToolsProtocolEventReceiver(
+          L"Security.securityStateChanged",
+          &devtools_protocol_event_receiver_))) {
+    devtools_protocol_event_receiver_->add_DevToolsProtocolEventReceived(
+        Callback<ICoreWebView2DevToolsProtocolEventReceivedEventHandler>(
+            [this](ICoreWebView2* sender,
+                   ICoreWebView2DevToolsProtocolEventReceivedEventArgs* args)
+                -> HRESULT {
+              if (devtools_protocol_event_callback_) {
+                wil::unique_cotaskmem_string json_args;
+                if (args->get_ParameterObjectAsJson(&json_args) == S_OK) {
+                  std::string json = CW2A(json_args.get(), CP_UTF8);
+                  devtools_protocol_event_callback_(json.c_str());
+                }
+              }
+
+              return S_OK;
+            })
+            .Get(),
+        &event_registrations_.devtools_protocol_event_token_);
   }
 }
 
 void Webview::RegisterEventHandlers() {
+  if (!webview_) {
+    return;
+  }
+
   webview_->add_ContentLoading(
       Callback<ICoreWebView2ContentLoadingEventHandler>(
           [this](ICoreWebView2* sender, IUnknown* args) -> HRESULT {
@@ -186,7 +231,7 @@ void Webview::RegisterEventHandlers() {
           [this](ICoreWebView2* sender, IUnknown* args) -> HRESULT {
             LPWSTR wurl;
             if (url_changed_callback_ && webview_->get_Source(&wurl) == S_OK) {
-              std::string url = CW2A(wurl);
+              std::string url = CW2A(wurl, CP_UTF8);
               url_changed_callback_(url);
             }
 
@@ -201,7 +246,7 @@ void Webview::RegisterEventHandlers() {
             LPWSTR wtitle;
             if (document_title_changed_callback_ &&
                 webview_->get_DocumentTitle(&wtitle) == S_OK) {
-              std::string title = CW2A(wtitle);
+              std::string title = CW2A(wtitle, CP_UTF8);
               document_title_changed_callback_(title);
             }
 
@@ -253,7 +298,7 @@ void Webview::RegisterEventHandlers() {
             wil::unique_cotaskmem_string wmessage;
             if (web_message_received_callback_ &&
                 args->get_WebMessageAsJson(&wmessage) == S_OK) {
-              const std::string message = CW2A(wmessage.get());
+              const std::string message = CW2A(wmessage.get(), CP_UTF8);
               web_message_received_callback_(message);
             }
 
@@ -281,7 +326,7 @@ void Webview::RegisterEventHandlers() {
               wil::com_ptr<ICoreWebView2Deferral> deferral;
               args->GetDeferral(deferral.put());
 
-              const std::string uri = CW2A(wuri.get());
+              const std::string uri = CW2A(wuri.get(), CP_UTF8);
               permission_requested_callback_(
                   uri, CW2PermissionKindToPermissionKind(kind),
                   is_user_initiated == TRUE,
@@ -297,13 +342,34 @@ void Webview::RegisterEventHandlers() {
           })
           .Get(),
       &event_registrations_.permission_requested_token_);
+
+  webview_->add_NewWindowRequested(
+      Callback<ICoreWebView2NewWindowRequestedEventHandler>(
+          [this](ICoreWebView2* sender,
+                 ICoreWebView2NewWindowRequestedEventArgs* args) -> HRESULT {
+            switch (popup_window_policy_) {
+              case WebviewPopupWindowPolicy::Deny:
+                args->put_Handled(TRUE);
+                break;
+              case WebviewPopupWindowPolicy::ShowInSameWindow:
+                args->put_NewWindow(webview_.get());
+                args->put_Handled(TRUE);
+                break;
+            }
+
+            return S_OK;
+          })
+          .Get(),
+      &event_registrations_.new_windows_requested_token_);
 }
 
 void Webview::SetSurfaceSize(size_t width, size_t height) {
-  auto surface = surface_.get();
+  if (!IsValid()) {
+    return;
+  }
 
-  if (surface && width > 0 && height > 0) {
-    surface.Size({(float)width, (float)height});
+  if (surface_ && width > 0 && height > 0) {
+    surface_->put_Size({(float)width, (float)height});
 
     RECT bounds;
     bounds.left = 0;
@@ -322,19 +388,33 @@ void Webview::SetSurfaceSize(size_t width, size_t height) {
 }
 
 bool Webview::ClearCookies() {
+  if (!IsValid()) {
+    return false;
+  }
   return webview_->CallDevToolsProtocolMethod(L"Network.clearBrowserCookies",
                                               L"{}", nullptr) == S_OK;
 }
 
 bool Webview::ClearCache() {
+  if (!IsValid()) {
+    return false;
+  }
   return webview_->CallDevToolsProtocolMethod(L"Network.clearBrowserCache",
                                               L"{}", nullptr) == S_OK;
 }
 
 bool Webview::SetCacheDisabled(bool disabled) {
+  if (!IsValid()) {
+    return false;
+  }
   std::string json = fmt::format("{{\"disableCache\":{}}}", disabled);
   return webview_->CallDevToolsProtocolMethod(L"Network.setCacheDisabled",
-                                towstring(json).c_str(), nullptr) == S_OK;
+                                              towstring(json).c_str(),
+                                              nullptr) == S_OK;
+}
+
+void Webview::SetPopupWindowPolicy(WebviewPopupWindowPolicy policy) {
+  popup_window_policy_ = policy;
 }
 
 bool Webview::SetUserAgent(const std::string& user_agent) {
@@ -345,6 +425,10 @@ bool Webview::SetUserAgent(const std::string& user_agent) {
 }
 
 bool Webview::SetBackgroundColor(int32_t color) {
+  if (!IsValid()) {
+    return false;
+  }
+
   COREWEBVIEW2_COLOR webview_color;
   ConvertColor(webview_color, color);
 
@@ -358,6 +442,10 @@ bool Webview::SetBackgroundColor(int32_t color) {
 }
 
 void Webview::SetCursorPos(double x, double y) {
+  if (!IsValid()) {
+    return;
+  }
+
   POINT point;
   point.x = static_cast<LONG>(x);
   point.y = static_cast<LONG>(y);
@@ -370,6 +458,10 @@ void Webview::SetCursorPos(double x, double y) {
 }
 
 void Webview::SetPointerButtonState(WebviewPointerButton button, bool is_down) {
+  if (!IsValid()) {
+    return;
+  }
+
   COREWEBVIEW2_MOUSE_EVENT_KIND kind;
   switch (button) {
     case WebviewPointerButton::Primary:
@@ -427,6 +519,10 @@ void Webview::SendScroll(double delta, bool horizontal) {
 }
 
 void Webview::SetScrollDelta(double delta_x, double delta_y) {
+  if (!IsValid()) {
+    return;
+  }
+
   if (delta_x != 0.0) {
     SendScroll(delta_x, true);
   }
@@ -436,41 +532,76 @@ void Webview::SetScrollDelta(double delta_x, double delta_y) {
 }
 
 void Webview::LoadUrl(const std::string& url) {
-  webview_->Navigate(towstring(url).c_str());
+  if (IsValid()) {
+    webview_->Navigate(towstring(url).c_str());
+  }
 }
 
 void Webview::LoadStringContent(const std::string& content) {
-  webview_->NavigateToString(towstring(content).c_str());
+  if (IsValid()) {
+    webview_->NavigateToString(get_utf16(content, CP_UTF8).c_str());
+  }
 }
 
 bool Webview::Stop() {
-  return webview_->CallDevToolsProtocolMethod(L"Page.stopLoading", L"{}",
-                                              nullptr) == S_OK;
+  if (!IsValid()) {
+    return false;
+  }
+  return SUCCEEDED(webview_->CallDevToolsProtocolMethod(L"Page.stopLoading",
+                                                        L"{}", nullptr));
 }
 
-bool Webview::Reload() { return webview_->Reload() == S_OK; }
+bool Webview::Reload() {
+  if (!IsValid()) {
+    return false;
+  }
+  return SUCCEEDED(webview_->Reload());
+}
 
-bool Webview::GoBack() { return webview_->GoBack() == S_OK; }
+bool Webview::GoBack() {
+  if (!IsValid()) {
+    return false;
+  }
+  return SUCCEEDED(webview_->GoBack());
+}
 
-bool Webview::GoForward() { return webview_->GoForward() == S_OK; }
+bool Webview::GoForward() {
+  if (!IsValid()) {
+    return false;
+  }
+  return SUCCEEDED(webview_->GoForward());
+}
 
 void Webview::ExecuteScript(const std::string& script,
                             ScriptExecutedCallback callback) {
-  webview_->ExecuteScript(
-      towstring(script).c_str(),
-      Callback<ICoreWebView2ExecuteScriptCompletedHandler>([callback](
-                                                               HRESULT result,
-                                                               PCWSTR _) {
-        callback(result == S_OK);
-        return S_OK;
-      }).Get());
+  if (IsValid()) {
+    if (SUCCEEDED(webview_->ExecuteScript(
+            get_utf16(script, CP_UTF8).c_str(),
+            Callback<ICoreWebView2ExecuteScriptCompletedHandler>(
+                [callback](HRESULT result, PCWSTR _) {
+                  callback(SUCCEEDED(result));
+                  return S_OK;
+                })
+                .Get()))) {
+      return;
+    }
+  }
+
+  callback(false);
 }
 
 bool Webview::PostWebMessage(const std::string& json) {
+  if (!IsValid()) {
+    return false;
+  }
   return webview_->PostWebMessageAsJson(towstring(json).c_str()) == S_OK;
 }
 
 bool Webview::Suspend() {
+  if (!IsValid()) {
+    return false;
+  }
+
   wil::com_ptr<ICoreWebView2_3> webview;
   webview = webview_.query<ICoreWebView2_3>();
   if (!webview) {
@@ -487,6 +618,10 @@ bool Webview::Suspend() {
 }
 
 bool Webview::Resume() {
+  if (!IsValid()) {
+    return false;
+  }
+
   wil::com_ptr<ICoreWebView2_3> webview;
   webview = webview_.query<ICoreWebView2_3>();
   if (!webview) {

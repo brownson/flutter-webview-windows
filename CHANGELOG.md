@@ -1,3 +1,47 @@
+## 0.1.7-dev.2
+
+* Ensure Flutter apps referencing `webview_windows` still work on Windows 8.
+
+## 0.1.7-dev.1
+
+* Remove windowsapp.lib dependency
+
+## 0.1.6
+
+* Improve WebView creation error handling
+
+## 0.1.5
+
+* Fix a potential crash during WebView creation
+
+## 0.1.4
+
+* Improve error handling for Webview environment creation
+
+## 0.1.3
+
+* Stability fixes
+
+## 0.1.2
+
+* Unregister method channel handlers upon WebView destruction
+
+## 0.1.1
+
+* Fix unicode string conversion in ExecuteScript and LoadStringContent
+* Load CoreMessaging.dll on demand
+
+## 0.1.0
+
+* Fix a string conversion issue
+* Add an option for controlling popup window behavior
+* Update Microsoft.Web.WebView2 and Microsoft.Windows.ImplementationLibrary
+
+## 0.0.9
+
+* Fix resizing issues
+* Add preliminary GpuSurfaceTexture support
+
 ## 0.0.8
 
 * Don't rely on AVX2 support

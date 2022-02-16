@@ -1,18 +1,19 @@
 #include "webview_host.h"
 
-#include <wil/com.h>
 #include <wrl.h>
 
 #include <future>
 #include <iostream>
 
+#include "util/rohelper.h"
+
+using namespace Microsoft::WRL;
+
+// static
 std::unique_ptr<WebviewHost> WebviewHost::Create(
-    std::optional<std::string> user_data_directory,
+    WebviewPlatform* platform, std::optional<std::string> user_data_directory,
     std::optional<std::string> browser_exe_path,
     std::optional<std::string> arguments) {
-  std::promise<HRESULT> result_promise;
-  wil::com_ptr<ICoreWebView2Environment> env;
-
   wil::com_ptr<CoreWebView2EnvironmentOptions> opts;
   if (arguments.has_value()) {
     opts = Microsoft::WRL::Make<CoreWebView2EnvironmentOptions>();
@@ -32,11 +33,11 @@ std::unique_ptr<WebviewHost> WebviewHost::Create(
         std::wstring(browser_exe_path->begin(), browser_exe_path->end());
   }
 
-
+  std::promise<HRESULT> result_promise;
+  wil::com_ptr<ICoreWebView2Environment> env;
   auto result = CreateCoreWebView2EnvironmentWithOptions(
       browser_path.has_value() ? browser_path->c_str() : nullptr,
-      user_data_dir.has_value() ? user_data_dir->c_str() : nullptr,
-      opts.get(),
+      user_data_dir.has_value() ? user_data_dir->c_str() : nullptr, opts.get(),
       Callback<ICoreWebView2CreateCoreWebView2EnvironmentCompletedHandler>(
           [&promise = result_promise, &ptr = env](
               HRESULT r, ICoreWebView2Environment* env) -> HRESULT {
@@ -46,23 +47,24 @@ std::unique_ptr<WebviewHost> WebviewHost::Create(
           })
           .Get());
 
-  if (result != S_OK || result_promise.get_future().get() != S_OK || !env) {
-    return {};
+  if (SUCCEEDED(result)) {
+    result = result_promise.get_future().get();
+    if ((SUCCEEDED(result) || result == RPC_E_CHANGED_MODE) && env) {
+      auto webview_env3 = env.try_query<ICoreWebView2Environment3>();
+      if (webview_env3) {
+        return std::unique_ptr<WebviewHost>(
+            new WebviewHost(platform, std::move(webview_env3)));
+      }
+    }
   }
 
-  auto webViewEnvironment3 = env.try_query<ICoreWebView2Environment3>();
-  if (!webViewEnvironment3) {
-    return {};
-  }
-
-  auto host = std::unique_ptr<WebviewHost>(new WebviewHost());
-  host->webview_env_ = webViewEnvironment3;
-
-  return host;
+  return {};
 }
 
-WebviewHost::WebviewHost() {
-  compositor_ = winrt::Windows::UI::Composition::Compositor();
+WebviewHost::WebviewHost(WebviewPlatform* platform,
+                         wil::com_ptr<ICoreWebView2Environment3> webview_env)
+    : webview_env_(webview_env) {
+  compositor_ = platform->graphics_context()->CreateCompositor();
 }
 
 void WebviewHost::CreateWebview(HWND hwnd, bool offscreen_only,
@@ -70,29 +72,46 @@ void WebviewHost::CreateWebview(HWND hwnd, bool offscreen_only,
                                 WebviewCreationCallback callback) {
   CreateWebViewCompositionController(
       hwnd, [=, self = this](
-                wil::com_ptr<ICoreWebView2CompositionController> controller) {
-        std::unique_ptr<Webview> webview(new Webview(
-            std::move(controller), self, hwnd, owns_window, offscreen_only));
-        callback(std::move(webview));
+                wil::com_ptr<ICoreWebView2CompositionController> controller,
+                std::unique_ptr<WebviewCreationError> error) {
+        if (controller) {
+          std::unique_ptr<Webview> webview(new Webview(
+              std::move(controller), self, hwnd, owns_window, offscreen_only));
+          callback(std::move(webview), nullptr);
+        } else {
+          callback(nullptr, std::move(error));
+        }
       });
 }
 
 void WebviewHost::CreateWebViewCompositionController(
     HWND hwnd, CompositionControllerCreationCallback callback) {
-  webview_env_->CreateCoreWebView2CompositionController(
+  auto hr = webview_env_->CreateCoreWebView2CompositionController(
       hwnd,
       Callback<
           ICoreWebView2CreateCoreWebView2CompositionControllerCompletedHandler>(
-          [callback](HRESULT result,
+          [callback](HRESULT hr,
                      ICoreWebView2CompositionController* compositionController)
               -> HRESULT {
-            callback(std::move(wil::com_ptr<ICoreWebView2CompositionController>(
-                compositionController)));
+            if (SUCCEEDED(hr)) {
+              callback(
+                  std::move(wil::com_ptr<ICoreWebView2CompositionController>(
+                      compositionController)),
+                  nullptr);
+            } else {
+              callback(nullptr, WebviewCreationError::create(
+                                    hr,
+                                    "CreateCoreWebView2CompositionController "
+                                    "completion handler failed."));
+            }
+
             return S_OK;
           })
           .Get());
-}
 
-winrt::Windows::UI::Composition::Visual WebviewHost::CreateSurface() const {
-  return compositor_.CreateContainerVisual();
+  if (FAILED(hr)) {
+    callback(nullptr,
+             WebviewCreationError::create(
+                 hr, "CreateCoreWebView2CompositionController failed."));
+  }
 }

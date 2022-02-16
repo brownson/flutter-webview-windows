@@ -2,10 +2,9 @@
 
 #include <WebView2.h>
 #include <wil/com.h>
-#include <winrt/Windows.UI.Composition.Desktop.h>
-#include <winrt/Windows.UI.Composition.h>
-#include <winrt/Windows.UI.Core.h>
-#include <wrl.h>
+#include <windows.ui.composition.desktop.h>
+#include <windows.ui.composition.h>
+#include <winrt/base.h>
 
 #include <functional>
 
@@ -26,6 +25,8 @@ enum class WebviewPermissionKind {
 };
 
 enum class WebviewPermissionState { Default, Allow, Deny };
+
+enum class WebviewPopupWindowPolicy { Allow, Deny, ShowInSameWindow };
 
 struct WebviewHistoryChanged {
   BOOL can_go_back;
@@ -80,6 +81,7 @@ struct EventRegistrations {
   EventRegistrationToken web_message_received_token_{};
   EventRegistrationToken permission_requested_token_{};
   EventRegistrationToken devtools_protocol_event_token_{};
+  EventRegistrationToken new_windows_requested_token_{};
 };
 
 class Webview {
@@ -106,9 +108,11 @@ class Webview {
 
   ~Webview();
 
-  winrt::agile_ref<winrt::Windows::UI::Composition::Visual> const surface() {
-    return surface_;
+  ABI::Windows::UI::Composition::IVisual* const surface() {
+    return surface_.get();
   }
+
+  bool IsValid() { return is_valid_; }
 
   void SetSurfaceSize(size_t width, size_t height);
   void SetCursorPos(double x, double y);
@@ -126,6 +130,7 @@ class Webview {
   bool ClearCookies();
   bool ClearCache();
   bool SetCacheDisabled(bool disabled);
+  void SetPopupWindowPolicy(WebviewPopupWindowPolicy policy);
   bool SetUserAgent(const std::string& user_agent);
   bool SetBackgroundColor(int32_t color);
   bool Suspend();
@@ -174,21 +179,21 @@ class Webview {
  private:
   HWND hwnd_;
   bool owns_window_;
+  bool is_valid_ = false;
   wil::com_ptr<ICoreWebView2CompositionController> composition_controller_;
   wil::com_ptr<ICoreWebView2Controller3> webview_controller_;
   wil::com_ptr<ICoreWebView2> webview_;
-  wil::com_ptr<ICoreWebView2DevToolsProtocolEventReceiver> devtools_protocol_event_receiver_;
+  wil::com_ptr<ICoreWebView2DevToolsProtocolEventReceiver>
+      devtools_protocol_event_receiver_;
   wil::com_ptr<ICoreWebView2Settings2> settings2_;
   POINT last_cursor_pos_ = {0, 0};
   VirtualKeyState virtual_keys_;
+  WebviewPopupWindowPolicy popup_window_policy_ =
+      WebviewPopupWindowPolicy::Allow;
 
-  winrt::agile_ref<winrt::Windows::UI::Composition::Visual> surface_{nullptr};
-
-  winrt::agile_ref<winrt::Windows::UI::Core::CoreDispatcher> dispatcher_{
-      nullptr};
-
-  winrt::Windows::UI::Composition::Desktop::DesktopWindowTarget window_target_{
-      nullptr};
+  winrt::com_ptr<ABI::Windows::UI::Composition::IVisual> surface_;
+  winrt::com_ptr<ABI::Windows::UI::Composition::Desktop::IDesktopWindowTarget>
+      window_target_;
 
   WebviewHost* host_;
   EventRegistrations event_registrations_{};
@@ -208,6 +213,9 @@ class Webview {
       wil::com_ptr<ICoreWebView2CompositionController> composition_controller,
       WebviewHost* host, HWND hwnd, bool owns_window, bool offscreen_only);
 
+  bool CreateSurface(
+      winrt::com_ptr<ABI::Windows::UI::Composition::ICompositor> compositor,
+      HWND hwnd, bool offscreen_only);
   void RegisterEventHandlers();
   void EnableSecurityUpdates();
   void SendScroll(double offset, bool horizontal);
