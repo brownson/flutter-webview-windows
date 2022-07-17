@@ -14,6 +14,8 @@ enum class WebviewLoadingState { None, Loading, NavigationCompleted };
 
 enum class WebviewPointerButton { None, Primary, Secondary, Tertiary };
 
+enum class WebviewPointerEventKind { Activate, Down, Enter, Leave, Up, Update };
+
 enum class WebviewPermissionKind {
   Unknown,
   Microphone,
@@ -27,6 +29,8 @@ enum class WebviewPermissionKind {
 enum class WebviewPermissionState { Default, Allow, Deny };
 
 enum class WebviewPopupWindowPolicy { Allow, Deny, ShowInSameWindow };
+
+enum class WebviewHostResourceAccessKind { Deny, Allow, DenyCors };
 
 struct WebviewHistoryChanged {
   BOOL can_go_back;
@@ -116,6 +120,12 @@ class Webview {
 
   void SetSurfaceSize(size_t width, size_t height);
   void SetCursorPos(double x, double y);
+  void SetPointerUpdate(int32_t pointer,
+                        WebviewPointerEventKind eventKind,
+                        double x,
+                        double y,
+                        double size,
+                        double pressure);
   void SetPointerButtonState(WebviewPointerButton button, bool isDown);
   void SetScrollDelta(double delta_x, double delta_y);
   void LoadUrl(const std::string& url);
@@ -132,9 +142,15 @@ class Webview {
   bool SetCacheDisabled(bool disabled);
   void SetPopupWindowPolicy(WebviewPopupWindowPolicy policy);
   bool SetUserAgent(const std::string& user_agent);
+  bool OpenDevTools();
   bool SetBackgroundColor(int32_t color);
   bool Suspend();
   bool Resume();
+
+  bool SetVirtualHostNameMapping(const std::string& hostName,
+                                 const std::string& path,
+                                 WebviewHostResourceAccessKind accessKind);
+  bool ClearVirtualHostNameMapping(const std::string& hostName);
 
   void OnUrlChanged(UrlChangedCallback callback) {
     url_changed_callback_ = std::move(callback);

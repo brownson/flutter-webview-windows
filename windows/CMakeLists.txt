@@ -1,8 +1,8 @@
 cmake_minimum_required(VERSION 3.15)
 set(PROJECT_NAME "webview_windows")
 
-set(WIL_VERSION "1.0.211019.2")
-set(WEBVIEW_VERSION "1.0.1054.31")
+set(WIL_VERSION "1.0.220201.1")
+set(WEBVIEW_VERSION "1.0.1210.39")
 
 project(${PROJECT_NAME} LANGUAGES CXX)
 
@@ -30,9 +30,9 @@ if(NOT NUGET)
   endif()
 endif()
 
-add_custom_target(DEPENDENCIES_DOWNLOAD ALL)
+add_custom_target(${PROJECT_NAME}_DEPENDENCIES_DOWNLOAD ALL)
 add_custom_command(
-  TARGET DEPENDENCIES_DOWNLOAD PRE_BUILD
+  TARGET ${PROJECT_NAME}_DEPENDENCIES_DOWNLOAD PRE_BUILD
   COMMAND ${NUGET} install Microsoft.Windows.ImplementationLibrary -Version ${WIL_VERSION} -ExcludeVersion -OutputDirectory ${CMAKE_BINARY_DIR}/packages
   COMMAND ${NUGET} install Microsoft.Web.WebView2 -Version ${WEBVIEW_VERSION} -ExcludeVersion -OutputDirectory ${CMAKE_BINARY_DIR}/packages
   DEPENDS ${NUGET}

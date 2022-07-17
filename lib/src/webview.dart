@@ -131,10 +131,10 @@ class WebviewController extends ValueNotifier<WebviewValue> {
   /// A stream reflecting the current cursor style.
   Stream<SystemMouseCursor> get _cursor => _cursorStreamController.stream;
 
-  final StreamController<Map<dynamic, dynamic>> _webMessageStreamController =
-      StreamController<Map<dynamic, dynamic>>();
+  final StreamController<dynamic> _webMessageStreamController =
+      StreamController<dynamic>();
 
-  Stream<Map<dynamic, dynamic>> get webMessage =>
+  Stream<dynamic> get webMessage =>
       _webMessageStreamController.stream;
 
   WebviewController() : super(WebviewValue.uninitialized());
@@ -351,6 +351,15 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     return _methodChannel.invokeMethod('setCacheDisabled', disabled);
   }
 
+  /// Opens the Browser DevTools in a separate window
+  Future<void> openDevTools() async {
+    if (_isDisposed) {
+      return;
+    }
+    assert(value.isInitialized);
+    return _methodChannel.invokeMethod('openDevTools');
+  }
+
   /// Sets the background color to the provided [color].
   ///
   /// Due to a limitation of the underlying WebView implementation,
@@ -392,6 +401,53 @@ class WebviewController extends ValueNotifier<WebviewValue> {
     }
     assert(value.isInitialized);
     return _methodChannel.invokeMethod('resume');
+  }
+
+  /// Adds a Virtual Host Name Mapping.
+  ///
+  /// Please refer to
+  /// [Microsofts](https://docs.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_3#setvirtualhostnametofoldermapping)
+  /// documentation for more details.
+  Future<void> addVirtualHostNameMapping(String hostName, String folderPath,
+      WebviewHostResourceAccessKind accessKind) async {
+    if (_isDisposed) {
+      return;
+    }
+
+    return _methodChannel.invokeMethod(
+        'setVirtualHostNameMapping', [hostName, folderPath, accessKind.index]);
+  }
+
+  /// Removes a Virtual Host Name Mapping.
+  ///
+  /// Please refer to
+  /// [Microsofts](https://docs.microsoft.com/en-us/microsoft-edge/webview2/reference/win32/icorewebview2_3#clearvirtualhostnametofoldermapping)
+  /// documentation for more details.
+  Future<void> removeVirtualHostNameMapping(String hostName) async {
+    if (_isDisposed) {
+      return;
+    }
+    return _methodChannel.invokeMethod('clearVirtualHostNameMapping', hostName);
+  }
+
+  /// Limits the number of frames per second to the given value.
+  Future<void> setFpsLimit([int? maxFps = 0]) async {
+    if (_isDisposed) {
+      return;
+    }
+    assert(value.isInitialized);
+    return _methodChannel.invokeMethod('setFpsLimit', maxFps);
+  }
+
+  /// Sends a Pointer (Touch) update
+  Future<void> _setPointerUpdate(WebviewPointerEventKind kind, int pointer,
+      Offset position, double size, double pressure) async {
+    if (_isDisposed) {
+      return;
+    }
+    assert(value.isInitialized);
+    return _methodChannel.invokeMethod('setPointerUpdate',
+        [pointer, kind.index, position.dx, position.dy, size, pressure]);
   }
 
   /// Moves the virtual cursor to [position].
@@ -454,6 +510,8 @@ class _WebviewState extends State<Webview> {
   final GlobalKey _key = GlobalKey();
   final _downButtons = <int, PointerButton>{};
 
+  PointerDeviceKind _pointerKind = PointerDeviceKind.unknown;
+
   MouseCursor _cursor = SystemMouseCursors.basic;
 
   WebviewController get _controller => widget.controller;
@@ -469,7 +527,7 @@ class _WebviewState extends State<Webview> {
     _controller._permissionRequested = widget.permissionRequested;
 
     // Report initial surface size
-    WidgetsBinding.instance!.addPostFrameCallback((_) => _reportSurfaceSize());
+    WidgetsBinding.instance.addPostFrameCallback((_) => _reportSurfaceSize());
 
     _cursorSubscription = _controller._cursor.listen((cursor) {
       setState(() {
@@ -499,27 +557,64 @@ class _WebviewState extends State<Webview> {
             child: _controller.value.isInitialized
                 ? Listener(
                     onPointerHover: (ev) {
+                      // ev.kind is for whatever reason not set to touch
+                      // even on touch input
+                      if (_pointerKind == PointerDeviceKind.touch) {
+                        // Ignoring hover events on touch for now
+                        return;
+                      }
                       _controller._setCursorPos(ev.localPosition);
                     },
                     onPointerDown: (ev) {
+                      _pointerKind = ev.kind;
+                      if (ev.kind == PointerDeviceKind.touch) {
+                        _controller._setPointerUpdate(
+                            WebviewPointerEventKind.down,
+                            ev.pointer,
+                            ev.localPosition,
+                            ev.size,
+                            ev.pressure);
+                        return;
+                      }
                       final button = getButton(ev.buttons);
                       _downButtons[ev.pointer] = button;
                       _controller._setPointerButtonState(button, true);
                     },
                     onPointerUp: (ev) {
+                      _pointerKind = ev.kind;
+                      if (ev.kind == PointerDeviceKind.touch) {
+                        _controller._setPointerUpdate(
+                            WebviewPointerEventKind.up,
+                            ev.pointer,
+                            ev.localPosition,
+                            ev.size,
+                            ev.pressure);
+                        return;
+                      }
                       final button = _downButtons.remove(ev.pointer);
                       if (button != null) {
                         _controller._setPointerButtonState(button, false);
                       }
                     },
                     onPointerCancel: (ev) {
+                      _pointerKind = ev.kind;
                       final button = _downButtons.remove(ev.pointer);
                       if (button != null) {
                         _controller._setPointerButtonState(button, false);
                       }
                     },
                     onPointerMove: (ev) {
-                      _controller._setCursorPos(ev.localPosition);
+                      _pointerKind = ev.kind;
+                      if (ev.kind == PointerDeviceKind.touch) {
+                        _controller._setPointerUpdate(
+                            WebviewPointerEventKind.update,
+                            ev.pointer,
+                            ev.localPosition,
+                            ev.size,
+                            ev.pressure);
+                      } else {
+                        _controller._setCursorPos(ev.localPosition);
+                      }
                     },
                     onPointerSignal: (signal) {
                       if (signal is PointerScrollEvent) {

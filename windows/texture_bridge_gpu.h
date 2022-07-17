@@ -12,6 +12,9 @@ class TextureBridgeGpu : public TextureBridge {
   const FlutterDesktopGpuSurfaceDescriptor* GetSurfaceDescriptor(size_t width,
                                                                  size_t height);
 
+ protected:
+  void StopInternal() override;
+
  private:
   FlutterDesktopGpuSurfaceDescriptor surface_descriptor_ = {};
   Size surface_size_ = {0, 0};
@@ -19,5 +22,5 @@ class TextureBridgeGpu : public TextureBridge {
   winrt::com_ptr<IDXGIResource> dxgi_surface_;
 
   void ProcessFrame(winrt::com_ptr<ID3D11Texture2D> src_texture);
-  void EnsureSurface(uint32_t width, uint32_t height, bool& is_exact_size);
+  void EnsureSurface(uint32_t width, uint32_t height);
 };

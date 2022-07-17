@@ -10,6 +10,10 @@ TextureBridgeFallback::TextureBridgeFallback(
     ABI::Windows::UI::Composition::IVisual* visual)
     : TextureBridge(graphics_context, visual) {}
 
+TextureBridgeFallback::~TextureBridgeFallback() {
+  const std::lock_guard<std::mutex> lock(buffer_mutex_);
+}
+
 void TextureBridgeFallback::ProcessFrame(
     winrt::com_ptr<ID3D11Texture2D> src_texture) {
   D3D11_TEXTURE2D_DESC desc;
@@ -110,6 +114,8 @@ void TextureBridgeFallback::EnsureStagingTexture(uint32_t width,
 
 const FlutterDesktopPixelBuffer* TextureBridgeFallback::CopyPixelBuffer(
     size_t width, size_t height) {
+  const std::lock_guard<std::mutex> lock(mutex_);
+
   if (!is_running_) {
     return nullptr;
   }

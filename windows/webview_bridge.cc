@@ -25,16 +25,22 @@ constexpr auto kMethodExecuteScript = "executeScript";
 constexpr auto kMethodPostWebMessage = "postWebMessage";
 constexpr auto kMethodSetSize = "setSize";
 constexpr auto kMethodSetCursorPos = "setCursorPos";
+constexpr auto kMethodSetPointerUpdate = "setPointerUpdate";
 constexpr auto kMethodSetPointerButton = "setPointerButton";
 constexpr auto kMethodSetScrollDelta = "setScrollDelta";
 constexpr auto kMethodSetUserAgent = "setUserAgent";
 constexpr auto kMethodSetBackgroundColor = "setBackgroundColor";
+constexpr auto kMethodOpenDevTools = "openDevTools";
 constexpr auto kMethodSuspend = "suspend";
 constexpr auto kMethodResume = "resume";
+constexpr auto kMethodSetVirtualHostNameMapping = "setVirtualHostNameMapping";
+constexpr auto kMethodClearVirtualHostNameMapping = "clearVirtualHostNameMapping";
 constexpr auto kMethodClearCookies = "clearCookies";
 constexpr auto kMethodClearCache = "clearCache";
 constexpr auto kMethodSetCacheDisabled = "setCacheDisabled";
 constexpr auto kMethodSetPopupWindowPolicy = "setPopupWindowPolicy";
+constexpr auto kMethodSetFpsLimit = "setFpsLimit";
+
 
 constexpr auto kEventType = "type";
 constexpr auto kEventValue = "value";
@@ -119,12 +125,12 @@ WebviewBridge::WebviewBridge(flutter::BinaryMessenger* messenger,
                              std::unique_ptr<Webview> webview)
     : webview_(std::move(webview)), texture_registrar_(texture_registrar) {
 #ifdef HAVE_FLUTTER_D3D_TEXTURE
-  texture_bridge_ = std::make_unique<TextureBridgeGpu>(
-      graphics_context, webview_->surface());
+  texture_bridge_ =
+      std::make_unique<TextureBridgeGpu>(graphics_context, webview_->surface());
 
   flutter_texture_ =
       std::make_unique<flutter::TextureVariant>(flutter::GpuSurfaceTexture(
-          kFlutterDesktopGpuSurfaceTypeDxgi,
+          kFlutterDesktopGpuSurfaceTypeDxgiSharedHandle,
           [bridge = static_cast<TextureBridgeGpu*>(texture_bridge_.get())](
               size_t width,
               size_t height) -> const FlutterDesktopGpuSurfaceDescriptor* {
@@ -314,6 +320,29 @@ void WebviewBridge::HandleMethodCall(
     return result->Error(kErrorInvalidArgs);
   }
 
+  // setPointerUpdate: 
+  // [int pointer, int event, double x, double y, double size, double pressure]
+  if (method_name.compare(kMethodSetPointerUpdate) == 0) {
+      const flutter::EncodableList* list =
+      std::get_if<flutter::EncodableList>(method_call.arguments());
+    if (!list || list->size() != 6) {
+      return result->Error(kErrorInvalidArgs);
+    }
+
+    const auto pointer = std::get_if<int32_t>(&(*list)[0]);
+    const auto event = std::get_if<int32_t>(&(*list)[1]);
+    const auto x = std::get_if<double>(&(*list)[2]);
+    const auto y = std::get_if<double>(&(*list)[3]);
+    const auto size = std::get_if<double>(&(*list)[4]);
+    const auto pressure = std::get_if<double>(&(*list)[5]);
+
+    if (pointer && event && x && y && size && pressure) {
+      webview_->SetPointerUpdate(*pointer, static_cast<WebviewPointerEventKind>(*event), *x, *y, *size, *pressure);
+      return result->Success();
+    }
+    return result->Error(kErrorInvalidArgs);
+  }
+
   // setScrollDelta: [double dx, double dy]
   if (method_name.compare(kMethodSetScrollDelta) == 0) {
     const auto delta = GetPointFromArgs(method_call.arguments());
@@ -420,6 +449,35 @@ void WebviewBridge::HandleMethodCall(
     return result->Success();
   }
 
+  // setVirtualHostNameMapping [string hostName, string path, int accessKind]
+  if (method_name.compare(kMethodSetVirtualHostNameMapping) == 0) {
+    const flutter::EncodableList* list =
+    std::get_if<flutter::EncodableList>(method_call.arguments());
+    if (!list || list->size() != 3) {
+      return result->Error(kErrorInvalidArgs);
+    }
+
+    const auto hostName = std::get_if<std::string>(&(*list)[0]);
+    const auto path = std::get_if<std::string>(&(*list)[1]);
+    const auto accessKind = std::get_if<int32_t>(&(*list)[2]);
+
+    if (hostName && path && accessKind) {
+      webview_->SetVirtualHostNameMapping(*hostName, *path, static_cast<WebviewHostResourceAccessKind>(*accessKind));
+      return result->Success();
+    }
+    return result->Error(kErrorInvalidArgs);
+  }
+
+  // clearVirtualHostNameMapping: string
+  if (method_name.compare(kMethodClearVirtualHostNameMapping) == 0) {
+    if (const auto hostName = std::get_if<std::string>(method_call.arguments())) {
+      if (webview_->ClearVirtualHostNameMapping(*hostName)) {
+      return result->Success();
+      }
+    }
+    return result->Error(kErrorInvalidArgs);
+  }
+
   // executeScript: string
   if (method_name.compare(kMethodExecuteScript) == 0) {
     if (const auto script = std::get_if<std::string>(method_call.arguments())) {
@@ -475,6 +533,14 @@ void WebviewBridge::HandleMethodCall(
     return result->Error(kErrorInvalidArgs);
   }
 
+  // openDevTools
+  if (method_name.compare(kMethodOpenDevTools) == 0) {
+    if (webview_->OpenDevTools()) {
+      return result->Success();
+    }
+    return result->Error(kMethodFailed);
+  }
+
   // clearCookies
   if (method_name.compare(kMethodClearCookies) == 0) {
     if (webview_->ClearCookies()) {
@@ -519,6 +585,14 @@ void WebviewBridge::HandleMethodCall(
       return result->Success();
     }
     return result->Error(kErrorInvalidArgs);
+  }
+
+  if (method_name.compare(kMethodSetFpsLimit) == 0) {
+    if (const auto value = std::get_if<int32_t>(method_call.arguments())) {
+      texture_bridge_->SetFpsLimit(*value == 0 ? std::nullopt
+                                               : std::make_optional(*value));
+      return result->Success();
+    }
   }
 
   result->NotImplemented();

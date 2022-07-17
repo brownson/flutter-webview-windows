@@ -1,3 +1,24 @@
+## 0.2.0
+
+* Fix Flutter 3.0 null safety warning in example
+* Bump WebView2 SDK version to `1.0.1210.3`
+* Add an option for limiting the FPS
+* Change data directory base path from `RoamingAppData` to `LocalAppData`
+
+## 0.1.9
+
+* Fix Flutter 3.0 compatibility
+
+## 0.1.8
+
+* Prefix CMake build target names to prevent collisions with other plugins
+
+## 0.1.7
+
+* Add method for opening DevTools
+* Update `TextureBridgeGpu`
+* Update `libfmt` dependency
+
 ## 0.1.7-dev.2
 
 * Ensure Flutter apps referencing `webview_windows` still work on Windows 8.
